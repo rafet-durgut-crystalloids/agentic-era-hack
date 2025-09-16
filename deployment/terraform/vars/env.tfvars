@@ -1,19 +1,11 @@
-# Project name used for resource naming
-project_name = "promosphere"
-
-# Your Production Google Cloud project id
-prod_project_id = "your-production-project-id"
-
-# Your Staging / Test Google Cloud project id
-staging_project_id = "your-staging-project-id"
-
-# Your Google Cloud project ID that will be used to host the Cloud Build pipelines.
-cicd_runner_project_id = "your-cicd-project-id"
-# Name of the host connection you created in Cloud Build
-host_connection_name = "git-promosphere"
-
-# Name of the repository you added to Cloud Build
-repository_name = "promosphere"
-
-# The Google Cloud region you will use to deploy the infrastructure
+staging_project_id = "qwiklabs-gcp-00-2a88a82239a1"
+prod_project_id = "qwiklabs-gcp-04-e0479738a642"
+cicd_runner_project_id = "qwiklabs-gcp-04-e0479738a642"
 region = "us-central1"
+repository_name = "agentic-era-hack"
+repository_owner = "rafet-durgut-crystalloids"
+host_connection_name = "git-agentic-era-hack"
+create_cb_connection = true
+create_repository = false
+github_app_installation_id = "86070782"
+github_pat_secret_id = "git-agentic-era-hack-github-oauthtoken-326f40"
