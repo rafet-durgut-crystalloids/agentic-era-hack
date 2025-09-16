@@ -23,7 +23,6 @@ backend:
 		--project $$PROJECT_ID \
 		--region "us-central1" \
 		--no-allow-unauthenticated \
-		--no-cpu-throttling \
 		--labels "created-by=adk" \
 		--set-env-vars \
 		"COMMIT_SHA=$(shell git rev-parse HEAD)" \

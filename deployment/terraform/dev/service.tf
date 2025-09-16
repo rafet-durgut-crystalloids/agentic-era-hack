@@ -42,7 +42,7 @@ resource "google_cloud_run_v2_service" "app" {
 
     scaling {
       min_instance_count = 1
-      max_instance_count = 10
+      max_instance_count = 4
     }
 
     session_affinity = true

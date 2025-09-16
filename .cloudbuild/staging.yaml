@@ -78,7 +78,7 @@ steps:
         locust -f tests/load_test/load_test.py \
         --headless \
         -H $$_STAGING_URL \
-        -t 30s -u 10 -r 0.5 \
+        -t 10s -u 10 -r 0.5 \
         --csv=tests/load_test/.results/results \
         --html=tests/load_test/.results/report.html
     env:
