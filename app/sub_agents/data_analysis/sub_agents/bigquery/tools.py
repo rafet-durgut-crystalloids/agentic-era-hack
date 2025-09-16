@@ -364,17 +364,18 @@ def _serialize_value_for_sql(value):
         return "NULL"
     if isinstance(value, str):
         # Escape single quotes and backslashes for SQL strings.
-        return f"'{value.replace('\\', '\\\\').replace("'", "''")}'"
+        s = value.replace("\\", "\\\\").replace("'", "''")
+        return "'" + s + "'"
     if isinstance(value, bytes):
-        return f"b'{value.decode('utf-8', 'replace').replace('\\', '\\\\').replace("'", "''")}'"
+        s = value.decode("utf-8", "replace").replace("\\", "\\\\").replace("'", "''")
+        return "b'" + s + "'"
     if isinstance(value, (datetime.datetime, datetime.date, pd.Timestamp)):
         # Timestamps and datetimes need to be quoted.
         return f"'{value}'"
     if isinstance(value, (list, np.ndarray)):
         # Format arrays.
-        return f"[{', '.join(_serialize_value_for_sql(v) for v in value)}]"
+        return "[" + ", ".join(_serialize_value_for_sql(v) for v in value) + "]"
     if isinstance(value, dict):
-        # For STRUCT, BQ expects ('val1', 'val2', ...).
-        # The values() order from the dataframe should match the column order.
-        return f"({', '.join(_serialize_value_for_sql(v) for v in value.values())})"
+        # For STRUCT, BQ expects ('val1', 'val2', ...). Order should match the column order.
+        return "(" + ", ".join(_serialize_value_for_sql(v) for v in value.values()) + ")"
     return str(value)
