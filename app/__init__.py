@@ -11,6 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import os
+from .utils.load_env_vars import load_env_vars
+load_env_vars("env_vars.txt")
 
 from .agent import root_agent
 
