@@ -1,381 +1,372 @@
-"""Tools used by the database query agent (BigQuery + NL2SQL orchestration)."""
+"""This file contains the tools used by the database agent."""
 
-from __future__ import annotations
 import datetime
 import logging
 import os
 import re
-import time
-from typing import Any, Dict, List, Optional
+
 import numpy as np
 import pandas as pd
+from ....data_analysis.utils.utils import get_env_var
+from google.adk.tools import ToolContext
 from google.cloud import bigquery
 from google.genai import Client
-from google.adk.tools import ToolContext
 
-from ....data_analysis.utils.utils import get_env_var
-
-# ------------------------------------------------------------------------------
-# Logging
-# ------------------------------------------------------------------------------
-LOGGER = logging.getLogger(__name__)
-if not LOGGER.handlers:
-    logging.basicConfig(
-        level=os.getenv("LOG_LEVEL", "INFO"),
-        format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
-    )
-
-# ------------------------------------------------------------------------------
-# Environment / Globals
-# ------------------------------------------------------------------------------
-DATA_PROJECT_ID: Optional[str] = os.getenv("BQ_DATA_PROJECT_ID")
-COMPUTE_PROJECT_ID: Optional[str] = os.getenv("BQ_COMPUTE_PROJECT_ID")
-VERTEX_PROJECT_ID: Optional[str] = os.getenv("GOOGLE_CLOUD_PROJECT")
-LOCATION: Optional[str] = os.getenv("GOOGLE_CLOUD_LOCATION")
-
-# Max rows cap for NL2SQL-generated queries
-MAX_NUM_ROWS: int = int(os.getenv("NL2SQL_MAX_ROWS", "80"))
-
-# Disallowed DML/DDL ops for validation (read-only enforcement)
-DISALLOWED_DML_RE = re.compile(
-    r"(?i)\b(update|delete|drop|insert|create|alter|truncate|merge)\b"
-)
-
-# Clients (lazy singletons)
-_llm_client: Optional[Client] = None
-_bq_client: Optional[bigquery.Client] = None
-
-# Database settings cache
-_database_settings: Optional[Dict[str, Any]] = None
+data_project = os.getenv("BQ_DATA_PROJECT_ID", None)
+compute_project = os.getenv("BQ_COMPUTE_PROJECT_ID", None)
+vertex_project = os.getenv("GOOGLE_CLOUD_PROJECT", None)
+location = os.getenv("GOOGLE_CLOUD_LOCATION")
+llm_client = Client(vertexai=True, project=vertex_project, location=location)
+MAX_NUM_ROWS = 80
 
 
-# ------------------------------------------------------------------------------
-# Client accessors
-# ------------------------------------------------------------------------------
-def get_llm_client() -> Client:
-    """Return (and memoize) a Google GenAI client for Vertex."""
-    global _llm_client
-    if _llm_client is None:
-        LOGGER.info(
-            "Initializing GenAI client (vertexai=True, project=%s, location=%s)",
-            VERTEX_PROJECT_ID,
-            LOCATION,
-        )
-        _llm_client = Client(vertexai=True, project=VERTEX_PROJECT_ID, location=LOCATION)
-    return _llm_client
+
+database_settings = None
+bq_client = None
 
 
-def get_bq_client() -> bigquery.Client:
-    """Return (and memoize) a BigQuery client using the compute project."""
-    global _bq_client
-    if _bq_client is None:
-        compute_project = get_env_var("BQ_COMPUTE_PROJECT_ID")
-        LOGGER.info("Creating BigQuery client (project=%s)", compute_project)
-        _bq_client = bigquery.Client(project=compute_project)
-    return _bq_client
+def get_bq_client():
+    """Get BigQuery client."""
+    global bq_client
+    if bq_client is None:
+        bq_client = bigquery.Client(
+            project=get_env_var("BQ_COMPUTE_PROJECT_ID"))
+    return bq_client
 
 
-# ------------------------------------------------------------------------------
-# Database settings (schema cache)
-# ------------------------------------------------------------------------------
-def get_database_settings() -> Dict[str, Any]:
-    """Get cached database settings (project, dataset, DDL schema)."""
-    global _database_settings
-    if _database_settings is None:
-        _database_settings = update_database_settings()
-    return _database_settings
+def get_database_settings():
+    """Get database settings."""
+    global database_settings
+    if database_settings is None:
+        database_settings = update_database_settings()
+    return database_settings
 
 
-def update_database_settings() -> Dict[str, Any]:
-    """Refresh database settings from BigQuery (rebuild DDL schema snapshot)."""
-    LOGGER.info("Updating database settings (rebuilding DDL schema snapshot)")
+def update_database_settings():
+    """Update database settings."""
+    global database_settings
     ddl_schema = get_bigquery_schema(
         dataset_id=get_env_var("BQ_DATASET_ID"),
         data_project_id=get_env_var("BQ_DATA_PROJECT_ID"),
         client=get_bq_client(),
-        compute_project_id=get_env_var("BQ_COMPUTE_PROJECT_ID"),
+        compute_project_id=get_env_var("BQ_COMPUTE_PROJECT_ID")
     )
-    settings = {
+    database_settings = {
         "bq_project_id": get_env_var("BQ_DATA_PROJECT_ID"),
         "bq_dataset_id": get_env_var("BQ_DATASET_ID"),
-        "bq_ddl_schema": ddl_schema,
+        "bq_ddl_schema": ddl_schema
     }
-    LOGGER.debug("Database settings updated: keys=%s", list(settings.keys()))
-    return settings
+    return database_settings
 
 
-# ------------------------------------------------------------------------------
-# BigQuery schema → DDL (with sample rows)
-# ------------------------------------------------------------------------------
-def get_bigquery_schema(
-    dataset_id: str,
-    data_project_id: str,
-    client: Optional[bigquery.Client] = None,
-    compute_project_id: Optional[str] = None,
-) -> str:
-    """Retrieve schema and generate DDL (with sample inserts) for a dataset."""
+def get_bigquery_schema(dataset_id,
+                        data_project_id,
+                        client=None,
+                        compute_project_id=None):
+    """Retrieves schema and generates DDL with example values for a BigQuery dataset.
+
+    Args:
+        dataset_id (str): The ID of the BigQuery dataset (e.g., 'my_dataset').
+        data_project_id (str): Project used for BQ data.
+        client (bigquery.Client): A BigQuery client.
+        compute_project_id (str): Project used for BQ compute.
+
+    Returns:
+        str: A string containing the generated DDL statements.
+    """
+
     if client is None:
-        LOGGER.info("No BigQuery client provided; creating with compute project")
         client = bigquery.Client(project=compute_project_id)
 
+    # dataset_ref = client.dataset(dataset_id)
     dataset_ref = bigquery.DatasetReference(data_project_id, dataset_id)
-    ddl_statements: List[str] = []
 
+    ddl_statements = ""
+
+    # Query INFORMATION_SCHEMA to robustly list tables. This is the recommended
+    # approach when a dataset may contain BigLake tables like Apache Iceberg,
+    # as the tables.list API can fail in those cases.
     info_schema_query = f"""
         SELECT table_name
         FROM `{data_project_id}.{dataset_id}.INFORMATION_SCHEMA.TABLES`
     """
-    LOGGER.debug("Schema discovery query:\n%s", info_schema_query)
     query_job = client.query(info_schema_query)
 
-    for row in query_job.result():
-        table_ref = dataset_ref.table(row.table_name)
+    for table_row in query_job.result():
+        table_ref = dataset_ref.table(table_row.table_name)
         table_obj = client.get_table(table_ref)
-        LOGGER.info("Found %s: %s", table_obj.table_type, table_ref.path)
 
         if table_obj.table_type == "VIEW":
             view_query = table_obj.view_query
-            ddl_statements.append(
-                f"CREATE OR REPLACE VIEW `{table_ref}` AS\n{view_query};\n"
+            ddl_statements += (
+                f"CREATE OR REPLACE VIEW `{table_ref}` AS\n{view_query};\n\n"
             )
             continue
+        elif table_obj.table_type == "EXTERNAL":
+            if (
+                table_obj.external_data_configuration
+                and table_obj.external_data_configuration.source_format
+                == "ICEBERG"
+            ):
+                config = table_obj.external_data_configuration
+                uris_list_str = ",\n    ".join(
+                    [f"'{uri}'" for uri in config.source_uris]
+                )
 
-        if table_obj.table_type == "EXTERNAL":
-            _append_external_iceberg_ddl_if_applicable(ddl_statements, table_obj)
-            # Skip DDL for other external types (keeps things concise)
-            continue
+                # Build column definitions from schema
+                column_defs = []
+                for field in table_obj.schema:
+                    col_type = field.field_type
+                    if field.mode == "REPEATED":
+                        col_type = f"ARRAY<{col_type}>"
+                    column_defs.append(f"  `{field.name}` {col_type}")
+                columns_str = ",\n".join(column_defs)
 
-        if table_obj.table_type == "TABLE":
-            ddl_statements.append(_ddl_for_table_with_samples(client, table_obj))
-            continue
-
-        # Skip other types: MATERIALIZED_VIEW, SNAPSHOT, etc.
-
-    return "".join(ddl_statements)
-
-
-def _append_external_iceberg_ddl_if_applicable(
-    ddl_statements: List[str], table_obj: bigquery.Table
-) -> None:
-    cfg = table_obj.external_data_configuration
-    if cfg and cfg.source_format == "ICEBERG":
-        uris = ",\n    ".join(f"'{u}'" for u in cfg.source_uris)
-        cols = []
-        for field in table_obj.schema:
-            col_type = f"ARRAY<{field.field_type}>" if field.mode == "REPEATED" else field.field_type
-            cols.append(f"  `{field.name}` {col_type}")
-        cols_str = ",\n".join(cols)
-        ddl_statements.append(
-            f"""CREATE EXTERNAL TABLE `{table_obj.reference}` (
-{cols_str}
+                ddl_statements += f"""CREATE EXTERNAL TABLE `{table_ref}` (
+{columns_str}
 )
-WITH CONNECTION `{cfg.connection_id}`
+WITH CONNECTION `{config.connection_id}`
 OPTIONS (
-  uris = [{uris}],
+  uris = [{uris_list_str}],
   format = 'ICEBERG'
-);\n"""
-        )
+);\n\n"""
+            # Skip DDL generation for other external tables.
+            continue
+        elif table_obj.table_type == "TABLE":
+            column_defs = []
+            for field in table_obj.schema:
+                col_type = field.field_type
+                if field.mode == "REPEATED":
+                    col_type = f"ARRAY<{col_type}>"
+                col_def = f"  `{field.name}` {col_type}"
+                if field.description:
+                    # Use OPTIONS for column descriptions
+                    col_def += (
+                        " OPTIONS(description='"
+                        f"{field.description.replace("'", "''")}')"
+                    )
+                column_defs.append(col_def)
 
-
-def _ddl_for_table_with_samples(client: bigquery.Client, table_obj: bigquery.Table) -> str:
-    # Column definitions with descriptions
-    cols = []
-    for field in table_obj.schema:
-        col_type = f"ARRAY<{field.field_type}>" if field.mode == "REPEATED" else field.field_type
-        col_def = f"  `{field.name}` {col_type}"
-        if field.description:
-            col_def += " OPTIONS(description='{}')".format(
-                field.description.replace("'", "''")
+            ddl_statement = (
+                f"CREATE OR REPLACE TABLE `{table_ref}` "
+                f"(\n{',\n'.join(column_defs)}\n);\n\n"
             )
-        cols.append(col_def)
-    ddl = f"CREATE OR REPLACE TABLE `{table_obj.reference}` (\n{',\n'.join(cols)}\n);\n"
 
-    # Sample rows (best-effort; ok if empty/fails)
-    try:
-        sample_query = f"SELECT * FROM `{table_obj.reference}` LIMIT 5"
-        LOGGER.debug("Sampling query: %s", sample_query)
-        df = client.query(sample_query).to_dataframe()
-        if not df.empty:
-            ddl += f"-- Example values for table `{table_obj.reference}`:\n"
-            for _, r in df.iterrows():
-                values = ", ".join(_serialize_value_for_sql(v) for v in r.values)
-                ddl += f"INSERT INTO `{table_obj.reference}` VALUES ({values});\n"
-        ddl += "\n"
-    except Exception as exc:  # noqa: BLE001
-        LOGGER.warning(
-            "Sample retrieval failed for %s: %s", table_obj.reference.path, exc
-        )
-        ddl += f"-- NOTE: Could not retrieve sample rows for table {table_obj.reference.path}.\n\n"
-    return ddl
+            # Add example values if available by running a query. This is more
+            # robust than list_rows, especially for BigLake tables like Iceberg.
+            try:
+                sample_query = f"SELECT * FROM `{table_ref}` LIMIT 5"
+                rows = client.query(sample_query).to_dataframe()
+
+                if not rows.empty:
+                    ddl_statement += f"-- Example values for table `{table_ref}`:\n"
+                    for _, row in rows.iterrows():
+                        values_str = ", ".join(
+                            _serialize_value_for_sql(v) for v in row.values
+                        )
+                        ddl_statement += (
+                            f"INSERT INTO `{table_ref}` VALUES ({values_str});\n\n"
+                        )
+            except Exception as e:
+                logging.warning(
+                    f"Could not retrieve sample rows for table {table_ref.path}: {e}"
+                )
+                ddl_statement += f"-- NOTE: Could not retrieve sample rows for table {table_ref.path}.\n\n"
+
+            ddl_statements += ddl_statement
+        else:
+            # Skip other types like MATERIALIZED_VIEW, SNAPSHOT etc.
+            continue
+
+    return ddl_statements
 
 
-# ------------------------------------------------------------------------------
-# NL2SQL prompt + generation
-# ------------------------------------------------------------------------------
-def _build_nl2sql_prompt(ddl_schema: str, question: str, max_rows: int) -> str:
-    """Construct the NL2SQL prompt (same logic, refreshed wording)."""
+def initial_bq_nl2sql(
+    question: str,
+    tool_context: ToolContext,
+) -> str:
+    """Generates an initial SQL query from a natural language question.
+
+    Args:
+        question (str): Natural language question.
+        tool_context (ToolContext): The tool context to use for generating the SQL
+          query.
+
+    Returns:
+        str: An SQL statement to answer this question.
+    """
+
     prompt_template = """
-You are a BigQuery SQL specialist. Given a natural-language request and the database schema below, produce a **GoogleSQL** query that answers the question.
+You are a BigQuery SQL expert tasked with answering user's questions about BigQuery tables by generating SQL queries in the GoogleSql dialect.  Your task is to write a Bigquery SQL query that answers the following question while using the provided context.
 
-Rules of engagement:
-- **Fully qualified names**: Always reference tables with backticks and full paths: `project.dataset.table`.
-- **Minimal joins**: Join only what’s necessary. Ensure join columns share the same data type.
-- **Aggregations**: Every non-aggregated SELECT column must appear in GROUP BY.
-- **Syntax correctness**: Use valid GoogleSQL. Alias with `AS` where helpful; wrap subqueries/UNIONs in parentheses.
-- **Column discipline**: Use only columns that exist in the provided schema, and only under their rightful tables.
-- **Filtering**: Apply appropriate WHERE/HAVING filters to avoid excessive row counts.
-- **Row cap**: Return fewer than {MAX_ROWS} rows (add a LIMIT if needed).
+**Guidelines:**
 
-Schema (tables and sample rows): {SCHEMA}
-User question: {QUESTION}
+- **Table Referencing:** Always use the full table name with the database prefix in the SQL statement.  Tables should be referred to using a fully qualified name with enclosed in backticks (`) e.g. `project_name.dataset_name.table_name`.  Table names are case sensitive.
+- **Joins:** Join as few tables as possible. When joining tables, ensure all join columns are the same data type. Analyze the database and the table schema provided to understand the relationships between columns and tables.
+- **Aggregations:**  Use all non-aggregated columns from the `SELECT` statement in the `GROUP BY` clause.
+- **SQL Syntax:** Return syntactically and semantically correct SQL for BigQuery with proper relation mapping (i.e., project_id, owner, table, and column relation). Use SQL `AS` statement to assign a new name temporarily to a table column or even a table wherever needed. Always enclose subqueries and union queries in parentheses.
+- **Column Usage:** Use *ONLY* the column names (column_name) mentioned in the Table Schema. Do *NOT* use any other column names. Associate `column_name` mentioned in the Table Schema only to the `table_name` specified under Table Schema.
+- **FILTERS:** You should write query effectively  to reduce and minimize the total rows to be returned. For example, you can use filters (like `WHERE`, `HAVING`, etc. (like 'COUNT', 'SUM', etc.) in the SQL query.
+- **LIMIT ROWS:**  The maximum number of rows returned should be less than {MAX_NUM_ROWS}.
 
-Think step-by-step and return **only** the SQL (no prose).
-""".strip()
+**Schema:**
 
-    return (
-        prompt_template.replace("{MAX_ROWS}", str(max_rows))
-        .replace("{SCHEMA}", ddl_schema)
-        .replace("{QUESTION}", question)
+The database structure is defined by the following table schemas (possibly with sample rows):
+
+```
+{SCHEMA}
+```
+
+**Natural language question:**
+
+```
+{QUESTION}
+```
+
+**Think Step-by-Step:** Carefully consider the schema, question, guidelines, and best practices outlined above to generate the correct BigQuery SQL.
+
+   """
+
+    ddl_schema = tool_context.state["database_settings"]["bq_ddl_schema"]
+
+    prompt = prompt_template.format(
+        MAX_NUM_ROWS=MAX_NUM_ROWS, SCHEMA=ddl_schema, QUESTION=question
     )
 
-
-def _call_nl2sql_llm(prompt: str) -> str:
-    """Call the model to generate SQL; strip code fences."""
-    model_name = os.getenv("GENERIC_MODEL")
-    client = get_llm_client()
-    LOGGER.info("NL2SQL: generating with model=%s", model_name)
-    t0 = time.time()
-    resp = client.models.generate_content(
-        model=model_name,
+    response = llm_client.models.generate_content(
+        model=os.getenv("GENERIC_MODEL"),
         contents=prompt,
         config={"temperature": 0.1},
     )
-    elapsed = (time.time() - t0) * 1000.0
-    LOGGER.info("NL2SQL: generation completed in %.1f ms", elapsed)
 
-    sql_text = (resp.text or "").strip()
-    # Remove markdown fences if present
-    sql_text = sql_text.replace("```sql", "").replace("```", "").strip()
-    LOGGER.debug("NL2SQL draft (first 200 chars): %s", sql_text[:200])
-    return sql_text
+    sql = response.text
+    if sql:
+        sql = sql.replace("```sql", "").replace("```", "").strip()
 
-
-def initial_bq_nl2sql(question: str, tool_context: ToolContext) -> str:
-    """Generate an initial SQL query from a natural language question."""
-    LOGGER.info("NL2SQL: building prompt for question")
-    ddl_schema = tool_context.state["database_settings"]["bq_ddl_schema"]
-    prompt = _build_nl2sql_prompt(ddl_schema, question, MAX_NUM_ROWS)
-    sql = _call_nl2sql_llm(prompt)
+    print("\n sql:", sql)
 
     tool_context.state["sql_query"] = sql
-    LOGGER.info("NL2SQL: draft SQL stored in tool_context.state['sql_query']")
+
     return sql
 
 
-# ------------------------------------------------------------------------------
-# Validation helpers
-# ------------------------------------------------------------------------------
-def _cleanup_sql(sql_string: str, max_rows: int) -> str:
-    """Normalize escapes/newlines; ensure a LIMIT exists."""
-    cleaned = (
-        sql_string.replace('\\"', '"')
-        .replace("\\\n", "\n")
-        .replace("\\'", "'")
-        .replace("\\n", "\n")
-        .strip()
-    )
-    if "limit" not in cleaned.lower():
-        cleaned += f" LIMIT {max_rows}"
-    return cleaned
-
-
-def _is_disallowed_dml(sql_string: str) -> bool:
-    return bool(DISALLOWED_DML_RE.search(sql_string))
-
-
-def _format_bq_rows(results: bigquery.table.RowIterator, max_rows: int) -> List[Dict[str, Any]]:
-    """Convert BQ results to JSON-serializable rows (date-friendly)."""
-    rows: List[Dict[str, Any]] = []
-    for row in results:
-        formatted = {}
-        for key, value in row.items():
-            if isinstance(value, datetime.date):
-                formatted[key] = value.strftime("%Y-%m-%d")
-            else:
-                formatted[key] = value
-        rows.append(formatted)
-        if len(rows) >= max_rows:
-            break
-    return rows
-
-
-def run_bigquery_validation(sql_string: str, tool_context: ToolContext) -> Dict[str, Any]:
-    """
-    Validate a BigQuery query (read-only). Stores first rows to tool_context.state["query_result"].
-    Returns:
-      {
-        "query_result": List[Dict] | None,
-        "error_message": str | None
-      }
-    """
-    LOGGER.info("Validation: starting")
-    LOGGER.debug("Validation: original SQL:\n%s", sql_string)
-
-    final_result: Dict[str, Any] = {"query_result": None, "error_message": None}
-
-    # Disallow DML/DDL (read-only)
-    if _is_disallowed_dml(sql_string):
-        final_result["error_message"] = "Invalid SQL: Contains disallowed DML/DDL operations."
-        LOGGER.warning("Validation: blocked disallowed DML/DDL")
-        return final_result
-
-    cleaned_sql = _cleanup_sql(sql_string, MAX_NUM_ROWS)
-    LOGGER.debug("Validation: cleaned SQL:\n%s", cleaned_sql)
-
-    try:
-        query_job = get_bq_client().query(cleaned_sql)
-        results = query_job.result()
-        LOGGER.info("Validation: query executed successfully")
-
-        rows = _format_bq_rows(results, MAX_NUM_ROWS) if results.schema else []
-        tool_context.state["query_result"] = rows
-        final_result["query_result"] = rows
-
-        if not rows:
-            final_result["error_message"] = "Valid SQL. Query executed successfully (no results)."
-            LOGGER.info("Validation: valid SQL, zero rows.")
-        else:
-            LOGGER.info("Validation: valid SQL, %d row(s).", len(rows))
-
-    except Exception as exc:  # noqa: BLE001
-        final_result["error_message"] = f"Invalid SQL: {exc}"
-        LOGGER.exception("Validation: query failed")
-
-    LOGGER.debug("Validation: final_result=%s", final_result)
-    return final_result
-
-
-# ------------------------------------------------------------------------------
-# Serialization helper for sample DDL inserts
-# ------------------------------------------------------------------------------
 def _serialize_value_for_sql(value):
     """Serializes a Python value from a pandas DataFrame into a BigQuery SQL literal."""
     if pd.isna(value):
         return "NULL"
     if isinstance(value, str):
         # Escape single quotes and backslashes for SQL strings.
-        s = value.replace("\\", "\\\\").replace("'", "''")
-        return "'" + s + "'"
+        return f"'{value.replace('\\', '\\\\').replace("'", "''")}'"
     if isinstance(value, bytes):
-        s = value.decode("utf-8", "replace").replace("\\", "\\\\").replace("'", "''")
-        return "b'" + s + "'"
+        return f"b'{value.decode('utf-8', 'replace').replace('\\', '\\\\').replace("'", "''")}'"
     if isinstance(value, (datetime.datetime, datetime.date, pd.Timestamp)):
         # Timestamps and datetimes need to be quoted.
         return f"'{value}'"
     if isinstance(value, (list, np.ndarray)):
         # Format arrays.
-        return "[" + ", ".join(_serialize_value_for_sql(v) for v in value) + "]"
+        return f"[{', '.join(_serialize_value_for_sql(v) for v in value)}]"
     if isinstance(value, dict):
-        # For STRUCT, BQ expects ('val1', 'val2', ...). Order should match the column order.
-        return "(" + ", ".join(_serialize_value_for_sql(v) for v in value.values()) + ")"
+        # For STRUCT, BQ expects ('val1', 'val2', ...).
+        # The values() order from the dataframe should match the column order.
+        return f"({', '.join(_serialize_value_for_sql(v) for v in value.values())})"
     return str(value)
+
+
+def run_bigquery_validation(
+    sql_string: str,
+    tool_context: ToolContext,
+) -> str:
+    """
+    Validate a BigQuery query by attempting a dry run/execute and summarizing the outcome.
+
+    What this does:
+      1) **SQL cleanup** via `cleanup_sql` to normalize escapes/newlines and add a LIMIT if missing.
+      2) **Safety check**: reject any query containing DML/DDL keywords
+         (UPDATE, DELETE, INSERT, CREATE, ALTER, TRUNCATE, MERGE, DROP).
+      3) **Execution**: submit the cleaned query to BigQuery.
+      4) **Result handling**:
+         - If rows are returned, capture up to MAX_NUM_ROWS (with simple date formatting)
+           and store them in `tool_context.state["query_result"]`.
+         - If no rows are returned, report that the query executed successfully without results.
+         - If an error occurs, include the error message.
+
+    Args:
+        sql_string: The SQL query to validate.
+        tool_context: The tool context used to store state (e.g., query results).
+
+    Returns:
+        A dict (serialized by the caller) with:
+          {
+            "query_result": List[Dict] | None,  # first rows if any
+            "error_message": str | None         # error or "no results" message
+          }
+    """
+
+    def cleanup_sql(sql_string):
+        """Normalize common escape sequences and ensure a LIMIT is present."""
+        # 1) Unescape \" → "
+        sql_string = sql_string.replace('\\"', '"')
+        # 2) Remove backslash-newline sequences (line continuations)
+        sql_string = sql_string.replace("\\\n", "\n")
+        # 3) Unescape \' → '
+        sql_string = sql_string.replace("\\'", "'")
+        # 4) Turn literal "\n" into actual newlines
+        sql_string = sql_string.replace("\\n", "\n")
+        # 5) Append LIMIT if missing (defensive cap)
+        if "limit" not in sql_string.lower():
+            sql_string = sql_string + " limit " + str(MAX_NUM_ROWS)
+        return sql_string
+
+    logging.info("Validating SQL: %s", sql_string)
+    sql_string = cleanup_sql(sql_string)
+    logging.info("Validating SQL (after cleanup): %s", sql_string)
+
+    final_result = {"query_result": None, "error_message": None}
+
+    # Block DML/DDL to enforce read-only validation
+    if re.search(
+        r"(?i)(update|delete|drop|insert|create|alter|truncate|merge)", sql_string
+    ):
+        final_result["error_message"] = (
+            "Invalid SQL: Contains disallowed DML/DDL operations."
+        )
+        return final_result
+
+    try:
+        query_job = get_bq_client().query(sql_string)
+        results = query_job.result()
+
+        if results.schema:
+            rows = [
+                {
+                    key: (
+                        value
+                        if not isinstance(value, datetime.date)
+                        else value.strftime("%Y-%m-%d")
+                    )
+                    for (key, value) in row.items()
+                }
+                for row in results
+            ][:MAX_NUM_ROWS]
+            print(f"final result rows size = {len(rows)}")
+        else:
+            rows = []
+        tool_context.state["query_result"] = rows
+        final_result["query_result"] = rows
+
+        if not rows:
+            final_result["error_message"] = (
+                "Valid SQL. Query executed successfully (no results)."
+            )
+        else:
+            # Valid query but no rows returned
+            final_result["error_message"] = (
+                "Valid SQL. Query executed successfully (no results)."
+            )
+
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        # Surface BigQuery error back to caller
+        final_result["error_message"] = f"Invalid SQL: {e}"
+
+    print("\n run_bigquery_validation final_result: \n", final_result)
+    return final_result
