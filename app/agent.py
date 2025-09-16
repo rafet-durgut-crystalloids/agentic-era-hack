@@ -12,6 +12,13 @@ os.environ["BQ_DATA_PROJECT_ID"] = "qwiklabs-gcp-00-2a88a82239a1"
 os.environ["BQ_COMPUTE_PROJECT_ID"] = "qwiklabs-gcp-00-2a88a82239a1"
 os.environ["BQ_DATASET_ID"] = "business_data"
 os.environ["RESOURCES_PROJECT"] = "qwiklabs-gcp-00-2a88a82239a1"
+os.environ["BUSINESS_CONFIG_JSON_PROJECT"] = "qwiklabs-gcp-00-2a88a82239a1"
+os.environ["BUSINESS_CONFIIG_JSON_BUCKET"] = "config_test0912391"
+os.environ["BUSINESS_CONFIIG_JSON_FILE"] = "business_config.json"
+os.environ["STRATEGIES_JSON_PROJECT"] = "qwiklabs-gcp-00-2a88a82239a1"
+os.environ["STRATEGIES_JSON_BUCKET"] = "config_test0912391"
+os.environ["STRATEGIES_JSON_FILE"] = "strategies.json"
+
 date_today = date.today()
 project = os.getenv("RESOURCES_PROJECT")
 location = os.getenv("RESOURCES_LOCATION")
@@ -20,7 +27,7 @@ location = os.getenv("RESOURCES_LOCATION")
 from google.genai import types
 from google.adk.agents import Agent
 from .prompts import return_instructions_root
-from .tools import call_data_analytics_agent, call_resource_agent, call_search_agent
+from .tools import call_data_analytics_agent, call_resource_agent, call_search_agent, call_storage_agent
 
 
 
@@ -34,6 +41,6 @@ root_agent = Agent(
     You provide clear insights, actionable recommendations.
     Today's date: {date_today}
     """,
-    tools=[call_data_analytics_agent, call_resource_agent, call_search_agent],
+    tools=[call_data_analytics_agent, call_resource_agent, call_search_agent, call_storage_agent],
     generate_content_config=types.GenerateContentConfig(temperature=0.3),
 )
