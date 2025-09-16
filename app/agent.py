@@ -4,6 +4,13 @@ from google.genai import types
 from google.adk.agents import Agent
 from .prompts import return_instructions_root
 
+os.environ["RESOURCES_PROJECT"] = "qwiklabs-gcp-00-2a88a82239a1"
+os.environ["RESOURCES_LOCATION"] = "us-central1"
+os.environ["GOOGLE_CLOUD_PROJECT"] = "qwiklabs-gcp-00-2a88a82239a1"
+os.environ["GENERIC_MODEL"] = "gemini-2.5-flash"
+os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "1"
+os.environ["GOOGLE_CLOUD_LOCATION"] = "us-central1"
+
 date_today = date.today()
 project = os.getenv("RESOURCES_PROJECT")
 location = os.getenv("RESOURCES_LOCATION")
