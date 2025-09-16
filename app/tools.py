@@ -7,7 +7,7 @@ from google.adk.tools.agent_tool import AgentTool
 import json
 from typing import List
 # from .sub_agents import data_analysis, db_agent
-from .sub_agents import data_analysis_agent, resource_agent, search_agent
+from .sub_agents import data_analysis_agent, resource_agent, search_agent, storage_agent
 
 
 async def call_data_analytics_agent(
@@ -72,3 +72,21 @@ async def call_search_agent(
     tool_context.state["search_agent_output"] = search_agent_output
     print("search_agent_output =", search_agent_output)
     return search_agent_output
+
+
+async def call_storage_agent(
+    intent: str,
+    tool_context: ToolContext,
+):
+    """Tool to call storage agent."""
+    print("\ncall_storage_agent with intent =", intent)
+
+    agent_tool = AgentTool(agent=storage_agent)
+
+    storage_agent_output = await agent_tool.run_async(
+        args={"request": intent}, tool_context=tool_context
+    )
+
+    tool_context.state["storage_agent_output"] = storage_agent_output
+    print("storage agent output =", storage_agent_output)
+    return storage_agent_output
