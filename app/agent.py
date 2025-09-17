@@ -34,11 +34,11 @@ from .tools import call_data_analytics_agent, call_resource_agent, call_search_a
 root_agent = Agent(
     model=os.getenv("GENERIC_MODEL"),
     name="promosphere",
-    instruction=return_instructions_root(),
+    instruction=return_instructions_root(resource_project_id=project, resource_project_location=location),
     global_instruction=f"""
-    You are PromoSphere, a specialized assistant that helps businesses create, monitor, and optimize marketing campaigns.
-    You focus on campaign performance, ROI, and customer impact by analyzing data from BigQuery and related sources.
-    You provide clear insights, actionable recommendations.
+    You are PromoSphere, an assistant for creating, monitoring, and optimizing marketing campaigns.
+    Focus on campaign performance, ROI, and customer impact using BigQuery data and related sources.
+    Provide clear insights and actionable recommendations.
     Today's date: {date_today}
     """,
     tools=[call_data_analytics_agent, call_resource_agent, call_search_agent, call_storage_agent],
