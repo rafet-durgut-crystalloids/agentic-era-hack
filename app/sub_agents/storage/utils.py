@@ -4,6 +4,7 @@ import uuid
 from typing import Optional, Dict, Any, List
 
 from google.cloud import storage
+from google.api_core.exceptions import NotFound, Conflict
 
 # env configs
 BUSINESS_CONFIG_PROJECT = os.getenv("BUSINESS_CONFIG_JSON_PROJECT")
@@ -15,9 +16,43 @@ STRATEGIES_BUCKET = os.getenv("STRATEGIES_JSON_BUCKET")
 STRATEGIES_FILE = os.getenv("STRATEGIES_JSON_FILE")
 
 
-def _get_storage_client() -> storage.Client:
-    """Initialize and return a Google Cloud Storage client."""
-    return storage.Client()
+def _get_storage_client(project: Optional[str] = None) -> storage.Client:
+    """Initialize and return a Google Cloud Storage client (optionally for a project)."""
+    return storage.Client(project=project) if project else storage.Client()
+
+
+def _get_bucket(project: Optional[str], bucket_name: str) -> storage.Bucket:
+    """Helper to fetch a bucket with an optional explicit project."""
+    client = _get_storage_client(project)
+    return client.bucket(bucket_name)
+
+
+def _blob_exists(project: Optional[str], bucket_name: str, blob_name: str) -> bool:
+    """Check if a blob exists in GCS (optionally under a specific project)."""
+    client = _get_storage_client(project)
+    blob = client.bucket(bucket_name).blob(blob_name)
+    return blob.exists(client)
+
+
+def _ensure_bucket_exists(project: Optional[str], bucket_name: str) -> storage.Bucket:
+    """
+    Ensure a GCS bucket exists. If not, create it.
+    Args:
+        project: optional GCP project to bind bucket to
+        bucket_name: name of the bucket
+    Returns:
+        The bucket object.
+    """
+    client = _get_storage_client(project)
+    try:
+        bucket = client.get_bucket(bucket_name)
+    except NotFound:
+        # Create bucket if not found
+        try:
+            bucket = client.create_bucket(bucket_name)
+        except Conflict:
+            bucket = client.get_bucket(bucket_name)
+    return bucket
 
 
 def download_json(bucket_name: str, blob_name: str) -> Any:
@@ -135,15 +170,41 @@ def create_strategy(strategy_json: Dict[str, Any]) -> str:
     return new_id
 
 
-# Example usage:
-# config = get_business_config_file()
-# strategies = get_strategies_file()
-# success = delete_strategy_by_id("some-uuid")
-# updated = update_strategy_by_id({"strategy_id": "some-uuid", "strategy_name": "new_name"})
-# new_id = create_strategy({
-#     "strategy_name": "weekend_bonus",
-#     "strategy_purpose": "Drive weekend sales",
-#     "strategy_definition": "Send 10% off coupon every Friday evening to weekend_shopper group.",
-#     "strategy_creation_date": "2025-07-28"
-# })
+def create_strategy_file(filename: str = "strategies.json") -> str:
+    if not STRATEGIES_BUCKET:
+        raise EnvironmentError("STRATEGIES_JSON_BUCKET is not set")
 
+    if _blob_exists(STRATEGIES_PROJECT, STRATEGIES_BUCKET, filename):
+        raise FileExistsError(f"file already exists: gs://{STRATEGIES_BUCKET}/{filename}")
+
+    bucket = _ensure_bucket_exists(STRATEGIES_PROJECT, STRATEGIES_BUCKET)
+    blob = bucket.blob(filename)
+    blob.upload_from_string("[]", content_type="application/json")
+
+    return f"gs://{STRATEGIES_BUCKET}/{filename}"
+
+
+def create_business_config_file(config: Dict[str, Any], filename: str = "business_config.json") -> str:
+    if not BUSINESS_CONFIG_BUCKET:
+        raise EnvironmentError("BUSINESS_CONFIIG_JSON_BUCKET is not set")
+
+    name = (config.get("name") or "").strip() if isinstance(config.get("name"), str) else None
+    if not name:
+        raise ValueError("config must include a non-empty 'name' field")
+
+    if _blob_exists(BUSINESS_CONFIG_PROJECT, BUSINESS_CONFIG_BUCKET, filename):
+        raise FileExistsError(f"file already exists: gs://{BUSINESS_CONFIG_BUCKET}/{filename}")
+
+    payload = {
+        "name": name,
+        "business_description": config.get("business_description", ""),
+        "budget": config.get("budget", 0),
+        "enable_budget_alerts": bool(config.get("enable_budget_alerts", False)),
+        "allowed_campaign_channels": config.get("allowed_campaign_channels", []),
+    }
+
+    bucket = _ensure_bucket_exists(BUSINESS_CONFIG_PROJECT, BUSINESS_CONFIG_BUCKET)
+    blob = bucket.blob(filename)
+    blob.upload_from_string(json.dumps(payload, indent=2), content_type="application/json")
+
+    return f"gs://{BUSINESS_CONFIG_BUCKET}/{filename}"
