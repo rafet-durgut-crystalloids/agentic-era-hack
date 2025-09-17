@@ -1,5 +1,5 @@
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 
 from google.cloud import firestore
 
@@ -115,3 +115,28 @@ def update_document_field(
     """
     doc_ref = _client.collection(collection).document(document_id)
     doc_ref.update({field_name: new_value})
+
+
+
+def get_all_documents(
+    collection: str,
+    include_ids: bool = True,
+) -> List[Dict[str, Any]]:
+    """
+    Retrieve all documents in a collection.
+
+    Args:
+        collection: Firestore collection name.
+        include_ids: If True, include each document's ID under key 'id'.
+
+    Returns:
+        A list of document dicts (empty list if none found).
+    """
+    col_ref = _client.collection(collection)
+    docs: List[Dict[str, Any]] = []
+    for snap in col_ref.stream():
+        data = snap.to_dict() or {}
+        if include_ids:
+            data = {"id": snap.id, **data}
+        docs.append(data)
+    return docs

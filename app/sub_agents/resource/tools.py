@@ -11,6 +11,7 @@ from .utils.firestore.dao import (
     update_document as _update_document,
     delete_document as _delete_document,
     update_document_field as _update_document_field,
+    get_all_documents as _get_all_documents
 )
 
 def fs_create_document(
@@ -41,6 +42,25 @@ def fs_get_document(
         return {"status": "error", "found": False, "document": None, "error_message": str(e)}
 
 fs_get_document_tool = FunctionTool(func=fs_get_document)
+
+def fs_get_all_documents(
+    collection: str,
+    include_ids: bool = True,
+) -> Dict[str, Any]:
+    """
+    Retrieve all documents in a collection.
+
+    Args:
+      collection: Firestore collection name.
+      include_ids: If True, include each document's ID under key 'id'.
+    """
+    try:
+        docs = _get_all_documents(collection=collection, include_ids=include_ids)
+        return {"status": "success", "documents": docs}
+    except Exception as e:
+        return {"status": "error", "documents": [], "error_message": str(e)}
+
+fs_get_all_documents_tool = FunctionTool(func=fs_get_all_documents)
 
 def fs_update_document(
     collection: str,
@@ -131,6 +151,7 @@ async def call_cli_agent(
 ALL_RESOURCE_TOOLS: List[Any] = [
     fs_create_document_tool,
     fs_get_document_tool,
+    fs_get_all_documents_tool,
     fs_update_document_tool,
     fs_update_document_field_tool,
     fs_delete_document_tool,
