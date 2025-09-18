@@ -1,97 +1,105 @@
-# promosphere
+# PromoSphere
 
-A base ReAct agent built with Google's Agent Development Kit (ADK)
-Agent generated with [`googleCloudPlatform/agent-starter-pack`](https://github.com/GoogleCloudPlatform/agent-starter-pack) version `0.14.1`
+PromoSphere is an **AI-powered Marketing Operations Assistant** for
+retail businesses.\
+It helps create, monitor, and optimize **budgets, promotions, campaigns,
+and strategies** by leveraging Google Cloud services like **BigQuery,
+Firestore, Cloud Storage, and Cloud Functions**.
 
-## Project Structure
+------------------------------------------------------------------------
 
-This project is organized as follows:
+## 🚀 Features
 
-```
-promosphere/
-├── app/                 # Core application code
-│   ├── agent.py         # Main agent logic
-│   ├── server.py        # FastAPI Backend server
-│   └── utils/           # Utility functions and helpers
-├── .cloudbuild/         # CI/CD pipeline configurations for Google Cloud Build
-├── deployment/          # Infrastructure and deployment scripts
-├── notebooks/           # Jupyter notebooks for prototyping and evaluation
-├── tests/               # Unit, integration, and load tests
-├── Makefile             # Makefile for common commands
-├── GEMINI.md            # AI-assisted development guide
-└── pyproject.toml       # Project dependencies and configuration
-```
+-   **Campaign & Promotion Management**
+    -   Create, update, and track campaigns & promotions with linked
+        budgets.
+    -   Automatic performance updates (impressions, clicks, conversions,
+        ROI, etc.).
+-   **Budget Guardrails**
+    -   Monitors overspending (`amount_left < 0`) and suggests pausing
+        or reallocating.
+    -   Supports predefined daily costs for multiple ad platforms.
+-   **Data-Driven Insights**
+    -   Analyzes BigQuery data (customers, orders, products) for trends
+        and opportunities.
+    -   Recommends promotions, campaigns, and target audiences.
+-   **Business Config & Strategies**
+    -   Centralized storage of **business configuration** and
+        **strategies** in Cloud Storage.
+    -   Full CRUD support (create, read, update, delete).
+-   **Proactive Assistant**
+    -   Suggests actions based on data (e.g., overspending budgets,
+        top-selling products).
+    -   Creative but grounded recommendations.
 
-## Requirements
+------------------------------------------------------------------------
 
-Before you begin, ensure you have:
-- **uv**: Python package manager (used for all dependency management in this project) - [Install](https://docs.astral.sh/uv/getting-started/installation/) ([add packages](https://docs.astral.sh/uv/concepts/dependencies/) with `uv add <package>`)
-- **Google Cloud SDK**: For GCP services - [Install](https://cloud.google.com/sdk/docs/install)
-- **Terraform**: For infrastructure deployment - [Install](https://developer.hashicorp.com/terraform/downloads)
-- **make**: Build automation tool - [Install](https://www.gnu.org/software/make/) (pre-installed on most Unix-based systems)
+## 🛠️ Architecture
 
-
-## Quick Start (Local Testing)
-
-Install required packages and launch the local development environment:
-
-```bash
-make install && make playground
-```
-
-## Commands
-
-| Command              | Description                                                                                 |
-| -------------------- | ------------------------------------------------------------------------------------------- |
-| `make install`       | Install all required dependencies using uv                                                  |
-| `make playground`    | Launch local development environment with backend and frontend - leveraging `adk web` command.|
-| `make backend`       | Deploy agent to Cloud Run (use `IAP=true` to enable Identity-Aware Proxy) |
-| `make local-backend` | Launch local development server |
-| `make test`          | Run unit and integration tests                                                              |
-| `make lint`          | Run code quality checks (codespell, ruff, mypy)                                             |
-| `make setup-dev-env` | Set up development environment resources using Terraform                         |
-| `uv run jupyter lab` | Launch Jupyter notebook                                                                     |
-
-For full command options and usage, refer to the [Makefile](Makefile).
+-   **BigQuery** → Data analytics (customers, orders, products). (inspired from Google's Example ADK Big Query Agent Example. Tailored the BigQuery tool according to our needs.)
+-   **Firestore** → Stores campaigns, promotions, budgets, audience
+    groups.
+-   **Cloud Storage** → Stores `business_config.json` and
+    `strategies.json`.
+-   **Cloud Functions** → Automates updates (e.g., campaign performance
+    every 12 hours).
+-   **PromoSphere Agent** → AI interface orchestrating all operations.
+- **Seach Agent** → Searches using ADK's built in search tool.
 
 
-## Usage
+------------------------------------------------------------------------
 
-This template follows a "bring your own agent" approach - you focus on your business logic, and the template handles everything else (UI, infrastructure, deployment, monitoring).
+## 📂 Firestore Collections
 
-1. **Prototype:** Build your Generative AI Agent using the intro notebooks in `notebooks/` for guidance. Use Vertex AI Evaluation to assess performance.
-2. **Integrate:** Import your agent into the app by editing `app/agent.py`.
-3. **Test:** Explore your agent functionality using the Streamlit playground with `make playground`. The playground offers features like chat history, user feedback, and various input types, and automatically reloads your agent on code changes.
-4. **Deploy:** Set up and initiate the CI/CD pipelines, customizing tests as necessary. Refer to the [deployment section](#deployment) for comprehensive instructions. For streamlined infrastructure deployment, simply run `uvx agent-starter-pack setup-cicd`. Check out the [`agent-starter-pack setup-cicd` CLI command](https://googlecloudplatform.github.io/agent-starter-pack/cli/setup_cicd.html). Currently supports GitHub with both Google Cloud Build and GitHub Actions as CI/CD runners.
-5. **Monitor:** Track performance and gather insights using Cloud Logging, Tracing, and the Looker Studio dashboard to iterate on your application.
+-   **budgets**
+-   **promotions**
+-   **campaigns**
+-   **audience_groups**
 
-The project includes a `GEMINI.md` file that provides context for AI tools like Gemini CLI when asking questions about your template.
+Each collection supports structured fields with `performanceData`
+objects for tracking effectiveness.
 
+------------------------------------------------------------------------
 
-## Deployment
+## ⚡ Cloud Function: Performance Updater
 
-> **Note:** For a streamlined one-command deployment of the entire CI/CD pipeline and infrastructure using Terraform, you can use the [`agent-starter-pack setup-cicd` CLI command](https://googlecloudplatform.github.io/agent-starter-pack/cli/setup_cicd.html). Currently supports GitHub with both Google Cloud Build and GitHub Actions as CI/CD runners.
+A scheduled Cloud Function runs every **12 hours** to: - Query all
+campaigns & promotions. - Update or insert `performanceData` fields with
+realistic metrics. - Adjust linked budgets accordingly.
 
-### Dev Environment
+------------------------------------------------------------------------
 
-You can test deployment towards a Dev Environment using the following command:
+## 📊 Daily Cost Defaults
 
-```bash
-gcloud config set project <your-dev-project-id>
-make backend
-```
+-   google_search: 120
+-   youtube: 80
+-   tiktok: 60
+-   instagram: 70
+-   facebook: 65
+-   x_twitter: 40
+-   linkedin: 90
+-   display: 50
+-   email: 20
+-   sms: 15
 
+------------------------------------------------------------------------
 
-The repository includes a Terraform configuration for the setup of the Dev Google Cloud project.
-See [deployment/README.md](deployment/README.md) for instructions.
+## ▶️ Demo Workflow
 
-### Production Deployment
+1.  **Ask for a campaign idea**: "Create a weekend campaign targeting
+    customers who ordered in the last month."
+2.  **PromoSphere suggests** audience group, budget, and promotion.
+3.  **User approves → Firestore updated.**
+4.  **Performance monitored & budgets auto-adjusted.**
 
-The repository includes a Terraform configuration for the setup of a production Google Cloud project. Refer to [deployment/README.md](deployment/README.md) for detailed instructions on how to deploy the infrastructure and application.
+------------------------------------------------------------------------
 
+## 📌 Setup
 
-## Monitoring and Observability
-> You can use [this Looker Studio dashboard](https://lookerstudio.google.com/reporting/46b35167-b38b-4e44-bd37-701ef4307418/page/tEnnC
-) template for visualizing events being logged in BigQuery. See the "Setup Instructions" tab to getting started.
+1.  Clone the repo.
+2.  Configure Google Cloud project & authentication.
+3.  Deploy Firestore, BigQuery datasets, and Cloud Storage buckets.
+4.  Deploy Cloud Function `update_performance_data`.
+5.  Run PromoSphere agent.
 
-The application uses OpenTelemetry for comprehensive observability with all events being sent to Google Cloud Trace and Logging for monitoring and to BigQuery for long term storage.
+------------------------------------------------------------------------
